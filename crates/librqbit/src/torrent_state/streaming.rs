@@ -25,14 +25,17 @@ use super::{ManagedTorrentHandle, TorrentMetadata};
 
 type StreamId = usize;
 
-// 32 mb lookahead by default.
-const PER_STREAM_BUF_DEFAULT: u64 = 32 * 1024 * 1024;
+/// How far ahead of its position a stream prioritises pieces, unless changed with
+/// [`FileStream::set_lookahead`].
+pub const DEFAULT_STREAM_LOOKAHEAD: u64 = 32 * 1024 * 1024;
 
 struct StreamState {
     file_id: usize,
     file_len: u64,
     file_abs_offset: u64,
     position: u64,
+    /// Bytes from `position` whose pieces are prioritised.
+    lookahead: u64,
     waker: Option<Waker>,
 }
 
@@ -43,7 +46,8 @@ impl StreamState {
 
     fn queue<'a>(&self, lengths: &'a Lengths) -> impl Iterator<Item = ValidPieceIndex> + use<'a> {
         let start = self.file_abs_offset + self.position;
-        let end = (start + PER_STREAM_BUF_DEFAULT).min(self.file_abs_offset + self.file_len);
+        // Always at least the piece being read, whatever the lookahead.
+        let end = (start + self.lookahead.max(1)).min(self.file_abs_offset + self.file_len);
         let dpl = lengths.default_piece_length();
         let start_id = (start / dpl as u64).try_into().unwrap();
         let end_id = end.div_ceil(dpl as u64).try_into().unwrap();
@@ -334,6 +338,14 @@ impl ManagedTorrent {
             .unwrap_or(false)
     }
 
+    fn notify_wanted_pieces_changed(&self) {
+        self.with_state(|state| {
+            if let crate::ManagedTorrentState::Live(l) = &state {
+                l.notify_wanted_pieces_changed();
+            }
+        });
+    }
+
     pub async fn stream(self: Arc<Self>, file_id: usize) -> anyhow::Result<FileStream> {
         // Streams need live or paused state, so wait out the initial check
         // of existing data instead of failing while it runs.
@@ -367,11 +379,13 @@ impl ManagedTorrent {
             StreamState {
                 file_id,
                 position: 0,
+                lookahead: DEFAULT_STREAM_LOOKAHEAD,
                 waker: None,
                 file_len: fd_len,
                 file_abs_offset: fd_offset,
             },
         );
+        s.torrent.notify_wanted_pieces_changed();
 
         debug!(stream_id = s.stream_id, file_id, "started stream");
 
@@ -389,6 +403,14 @@ impl FileStream {
     }
 
     fn set_position(&mut self, new_pos: u64) {
+        let lengths = self.metadata.lengths();
+        let piece_at = |pos| {
+            lengths
+                .compute_current_piece(pos, self.file_torrent_abs_offset)
+                .map(|p| p.id)
+        };
+        let moved_to_another_piece = piece_at(self.position) != piece_at(new_pos);
+
         self.position = new_pos;
         self.streams
             .streams
@@ -396,9 +418,78 @@ impl FileStream {
             .unwrap()
             .value_mut()
             .position = new_pos;
+
+        // The lookahead window slid: there may be new pieces to request.
+        if moved_to_another_piece {
+            self.torrent.notify_wanted_pieces_changed();
+        }
     }
 
     pub fn len(&self) -> u64 {
         self.file_len
+    }
+
+    /// How many bytes ahead of its position this stream prioritises for download
+    /// (default [`DEFAULT_STREAM_LOOKAHEAD`]). The piece at the current position is
+    /// always prioritised, even with a lookahead of 0.
+    pub fn set_lookahead(&mut self, bytes: u64) {
+        self.streams
+            .streams
+            .get_mut(&self.stream_id)
+            .unwrap()
+            .value_mut()
+            .lookahead = bytes;
+        self.torrent.notify_wanted_pieces_changed();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use librqbit_core::lengths::Lengths;
+
+    use super::{DEFAULT_STREAM_LOOKAHEAD, StreamState};
+
+    const PIECE: u32 = 1024;
+
+    /// A stream over a 100-piece single-file torrent.
+    fn stream(position: u64, lookahead: u64) -> (StreamState, Lengths) {
+        let lengths = Lengths::new(100 * PIECE as u64, PIECE).unwrap();
+        let state = StreamState {
+            file_id: 0,
+            file_len: 100 * PIECE as u64,
+            file_abs_offset: 0,
+            position,
+            lookahead,
+            waker: None,
+        };
+        (state, lengths)
+    }
+
+    fn queued(state: &StreamState, lengths: &Lengths) -> Vec<u32> {
+        state.queue(lengths).map(|p| p.get()).collect()
+    }
+
+    #[test]
+    fn test_queue_covers_the_lookahead_from_the_position() {
+        let (s, l) = stream(10 * PIECE as u64, 3 * PIECE as u64);
+        assert_eq!(queued(&s, &l), vec![10, 11, 12]);
+    }
+
+    #[test]
+    fn test_queue_includes_a_partially_covered_last_piece() {
+        let (s, l) = stream(10 * PIECE as u64 + 1, 2 * PIECE as u64);
+        assert_eq!(queued(&s, &l), vec![10, 11, 12]);
+    }
+
+    #[test]
+    fn test_zero_lookahead_still_queues_the_current_piece() {
+        let (s, l) = stream(10 * PIECE as u64, 0);
+        assert_eq!(queued(&s, &l), vec![10]);
+    }
+
+    #[test]
+    fn test_queue_stops_at_the_end_of_the_file() {
+        let (s, l) = stream(98 * PIECE as u64, DEFAULT_STREAM_LOOKAHEAD);
+        assert_eq!(queued(&s, &l), vec![98, 99]);
     }
 }

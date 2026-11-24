@@ -33,6 +33,11 @@ impl StorageFactory for FilesystemStorageFactory {
         })
     }
 
+    /// Files live in the torrent's output folder, which is persisted with it.
+    fn supports_session_persistence(&self) -> bool {
+        true
+    }
+
     fn clone_box(&self) -> crate::storage::BoxStorageFactory {
         self.boxed()
     }

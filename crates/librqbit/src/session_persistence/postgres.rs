@@ -41,6 +41,9 @@ impl TorrentsTableRecord {
                     .only_files
                     .map(|v| v.into_iter().map(|v| v as usize).collect()),
                 is_paused: self.is_paused,
+                // Not stored in the torrents table (yet): restored torrents download in
+                // full.
+                download_mode: Default::default(),
             },
         ))
     }

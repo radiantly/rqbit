@@ -58,6 +58,10 @@ where
     pub peer_avg_time: Option<Duration>,
     /// Priority pieces to check first (e.g., for streaming).
     pub priority_pieces: I,
+    /// Whether to fall back to the queued pieces of the selected files when no priority
+    /// piece is available. False in streamed download mode, where only priority pieces
+    /// are wanted.
+    pub include_queued: bool,
     /// File download priority ordering.
     pub file_priorities: &'a FilePriorities,
     /// File metadata for iterating pieces.
@@ -144,14 +148,16 @@ impl PieceTracker {
 
         // Then check naturally ordered queued pieces
         // Note: iter_queued_pieces only returns pieces in queue_pieces (not in-flight)
-        let queued: Vec<_> = self
-            .chunks
-            .iter_queued_pieces(req.file_priorities, req.file_infos)
-            .collect();
+        if req.include_queued {
+            let queued: Vec<_> = self
+                .chunks
+                .iter_queued_pieces(req.file_priorities, req.file_infos)
+                .collect();
 
-        for piece in queued {
-            if (req.peer_has_piece)(piece) {
-                return self.reserve_piece(piece, req.peer);
+            for piece in queued {
+                if (req.peer_has_piece)(piece) {
+                    return self.reserve_piece(piece, req.peer);
+                }
             }
         }
 
@@ -392,6 +398,7 @@ mod tests {
             peer: peer(1),
             peer_avg_time: None,
             priority_pieces: std::iter::empty(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |_| true, // Peer has all pieces
@@ -425,6 +432,7 @@ mod tests {
             peer: peer(1),
             peer_avg_time: None,
             priority_pieces: std::iter::empty(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |p| p.get() >= 2,
@@ -453,6 +461,7 @@ mod tests {
             peer: peer(1),
             peer_avg_time: None,
             priority_pieces: std::iter::empty(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |_| true,
@@ -486,6 +495,7 @@ mod tests {
             peer: peer(1),
             peer_avg_time: None,
             priority_pieces: std::iter::empty(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |_| true,
@@ -514,6 +524,7 @@ mod tests {
             peer: peer(2),
             peer_avg_time: None,
             priority_pieces: std::iter::empty(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |p| p == piece, // Only has the failed piece
@@ -543,6 +554,7 @@ mod tests {
             peer: peer_a,
             peer_avg_time: None,
             priority_pieces: std::iter::empty(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |_| true,
@@ -555,6 +567,7 @@ mod tests {
             peer: peer_a,
             peer_avg_time: None,
             priority_pieces: std::iter::empty(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |_| true,
@@ -569,6 +582,7 @@ mod tests {
             peer: peer_b,
             peer_avg_time: None,
             priority_pieces: std::iter::empty(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |_| true,
@@ -608,6 +622,7 @@ mod tests {
             peer: peer(1),
             peer_avg_time: None,
             priority_pieces: std::iter::empty(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |_| true,
@@ -617,6 +632,7 @@ mod tests {
             peer: peer(1),
             peer_avg_time: None,
             priority_pieces: std::iter::empty(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |_| true,
@@ -634,6 +650,7 @@ mod tests {
             peer: peer(2),
             peer_avg_time: None,
             priority_pieces: std::iter::empty(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |_| true,
@@ -672,6 +689,7 @@ mod tests {
             peer: peer(1),
             peer_avg_time: None,
             priority_pieces: priority.into_iter(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |_| true,
@@ -682,6 +700,47 @@ mod tests {
         match result {
             AcquireResult::Reserved(p) => assert_eq!(p.get(), 3),
             _ => panic!("Expected Reserved(3), got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_without_queued_only_priority_pieces_are_reserved() {
+        let chunks = make_test_chunk_tracker(5);
+        let mut tracker = PieceTracker::new(chunks);
+
+        let file_infos = make_test_file_infos(5);
+        let file_priorities = make_default_file_priorities(&file_infos);
+        let piece = |i| {
+            tracker
+                .chunks()
+                .get_lengths()
+                .validate_piece_index(i)
+                .unwrap()
+        };
+        let priority = vec![piece(3)];
+
+        let acquire = |tracker: &mut PieceTracker, priority: Vec<ValidPieceIndex>| {
+            tracker.acquire_piece(AcquireRequest {
+                peer: peer(1),
+                peer_avg_time: None,
+                priority_pieces: priority.into_iter(),
+                include_queued: false,
+                file_priorities: &file_priorities,
+                file_infos: &file_infos,
+                peer_has_piece: |_| true,
+                can_steal: |_| false,
+            })
+        };
+
+        // The priority piece is served...
+        match acquire(&mut tracker, priority) {
+            AcquireResult::Reserved(p) => assert_eq!(p.get(), 3),
+            other => panic!("Expected Reserved(3), got {other:?}"),
+        }
+        // ...but once it's in flight, the other queued pieces (0, 1, 2, 4) are not.
+        match acquire(&mut tracker, vec![]) {
+            AcquireResult::NoneAvailable => {}
+            other => panic!("Expected NoneAvailable, got {other:?}"),
         }
     }
 
@@ -698,6 +757,7 @@ mod tests {
             peer: peer(1),
             peer_avg_time: None,
             priority_pieces: std::iter::empty(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |_| false, // Peer has nothing
@@ -746,6 +806,7 @@ mod tests {
             peer: peer_a,
             peer_avg_time: None,
             priority_pieces: std::iter::empty(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |_| true,
@@ -762,6 +823,7 @@ mod tests {
             peer: peer_a,
             peer_avg_time: None,
             priority_pieces: std::iter::empty(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |_| true,
@@ -784,6 +846,7 @@ mod tests {
             peer: peer_b,
             peer_avg_time: Some(Duration::from_millis(1)),
             priority_pieces: std::iter::empty(),
+            include_queued: true,
             file_priorities: &file_priorities,
             file_infos: &file_infos,
             peer_has_piece: |p| p.get() == 4, // Peer B only has piece 4

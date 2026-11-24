@@ -43,6 +43,10 @@ impl<U: StorageFactory + Clone> StorageFactory for TimingStorageFactory<U> {
         self.underlying_factory.is_type_id(type_id)
     }
 
+    fn supports_session_persistence(&self) -> bool {
+        self.underlying_factory.supports_session_persistence()
+    }
+
     fn clone_box(&self) -> crate::storage::BoxStorageFactory {
         self.clone().boxed()
     }

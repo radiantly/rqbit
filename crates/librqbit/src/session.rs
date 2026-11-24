@@ -35,8 +35,9 @@ use crate::{
         ConnectionKind, ConnectionOptions, SocksProxyConfig, StreamConnector, StreamConnectorArgs,
     },
     torrent_state::{
-        ManagedTorrentHandle, ManagedTorrentLocked, ManagedTorrentOptions, ManagedTorrentState,
-        TorrentMetadata, TorrentStateLive, initializing::TorrentStateInitializing,
+        DownloadMode, ManagedTorrentHandle, ManagedTorrentLocked, ManagedTorrentOptions,
+        ManagedTorrentState, TorrentMetadata, TorrentStateLive,
+        initializing::TorrentStateInitializing,
     },
     type_aliases::{BoxAsyncReadVectored, BoxAsyncWrite, PeerStream},
 };
@@ -289,6 +290,11 @@ pub struct AddTorrentOptions {
 
     /// Max concurrent connected peers.
     pub peer_limit: Option<usize>,
+
+    /// Which pieces to download: everything selected (default), or only what open
+    /// streams are about to read.
+    #[serde(default)]
+    pub download_mode: DownloadMode,
 
     /// This is used to restore the session from serialized state.
     pub preferred_id: Option<usize>,
@@ -1375,6 +1381,7 @@ impl Session {
                     ratelimits: opts.ratelimits,
                     initial_peers: opts.initial_peers.clone().unwrap_or_default(),
                     peer_limit: opts.peer_limit.or(self.peer_limit),
+                    download_mode: opts.download_mode,
                     #[cfg(feature = "disable-upload")]
                     _disable_upload: self._disable_upload,
                 },

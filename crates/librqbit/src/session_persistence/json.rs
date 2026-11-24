@@ -1,5 +1,4 @@
 use std::{
-    any::TypeId,
     collections::HashMap,
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
@@ -11,7 +10,6 @@ use crate::{
     bitv_factory::BitVFactory,
     session::TorrentId,
     spawn_utils::BlockingSpawner,
-    storage::filesystem::FilesystemStorageFactory,
     torrent_state::ManagedTorrentHandle,
     type_aliases::BF,
 };
@@ -148,9 +146,9 @@ impl JsonSessionPersistenceStore {
         if !torrent
             .shared
             .storage_factory
-            .is_type_id(TypeId::of::<FilesystemStorageFactory>())
+            .supports_session_persistence()
         {
-            bail!("storages other than FilesystemStorageFactory are not supported");
+            bail!("this torrent's storage doesn't support session persistence");
         }
 
         let st = SerializedTorrent {
@@ -166,6 +164,7 @@ impl JsonSessionPersistenceStore {
             only_files: torrent.only_files().clone(),
             is_paused: torrent.is_paused(),
             output_folder: torrent.shared().options.output_folder.clone(),
+            download_mode: torrent.download_mode(),
         };
 
         let torrent_bytes = torrent

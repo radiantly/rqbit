@@ -53,7 +53,7 @@ use initializing::TorrentStateInitializing;
 
 use self::paused::TorrentStatePaused;
 pub use self::stats::{TorrentStats, TorrentStatsState};
-pub use self::streaming::FileStream;
+pub use self::streaming::{DEFAULT_STREAM_LOOKAHEAD, FileStream};
 
 // State machine transitions.
 //
@@ -107,6 +107,19 @@ pub(crate) struct ManagedTorrentLocked {
     pub(crate) only_files: Option<Vec<usize>>,
 }
 
+/// Which pieces a torrent downloads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DownloadMode {
+    /// Every piece of the selected files.
+    #[default]
+    Full,
+    /// Only pieces that open streams are about to read: each stream's lookahead window
+    /// (see `FileStream::set_lookahead`). Nothing is downloaded while no stream is open.
+    /// Pieces already held are still seeded.
+    Streamed,
+}
+
 #[derive(Default)]
 pub(crate) struct ManagedTorrentOptions {
     pub force_tracker_interval: Option<Duration>,
@@ -118,6 +131,7 @@ pub(crate) struct ManagedTorrentOptions {
     pub ratelimits: LimitsConfig,
     pub initial_peers: Vec<SocketAddr>,
     pub peer_limit: Option<usize>,
+    pub download_mode: DownloadMode,
     #[cfg(feature = "disable-upload")]
     pub _disable_upload: bool,
 }
@@ -248,6 +262,10 @@ impl ManagedTorrent {
 
     pub fn info_hash(&self) -> Id20 {
         self.shared.info_hash
+    }
+
+    pub fn download_mode(&self) -> DownloadMode {
+        self.shared.options.download_mode
     }
 
     pub fn only_files(&self) -> Option<Vec<usize>> {

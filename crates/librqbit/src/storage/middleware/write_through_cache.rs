@@ -59,6 +59,11 @@ impl<U: StorageFactory + Clone> StorageFactory for WriteThroughCacheStorageFacto
         self.underlying.is_type_id(type_id)
     }
 
+    /// Write-through: every write reaches the underlying storage immediately.
+    fn supports_session_persistence(&self) -> bool {
+        self.underlying.supports_session_persistence()
+    }
+
     fn clone_box(&self) -> crate::storage::BoxStorageFactory {
         self.clone().boxed()
     }

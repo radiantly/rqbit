@@ -39,7 +39,9 @@ use std::{
     path::Path,
 };
 
-use librqbit_core::lengths::ValidPieceIndex;
+/// Re-exported so that storages outside this crate can implement
+/// [`TorrentStorage::on_piece_completed`].
+pub use librqbit_core::lengths::ValidPieceIndex;
 
 use crate::torrent_state::{ManagedTorrentShared, TorrentMetadata};
 
@@ -69,6 +71,18 @@ pub trait StorageFactory: Send + Sync + Any {
     fn is_type_id(&self, type_id: TypeId) -> bool {
         Self::type_id(self) == type_id
     }
+
+    /// Whether session persistence may save torrents that use this storage.
+    ///
+    /// A persisted torrent is restored from its metadata and add options alone, with a
+    /// fresh storage and the saved "have" bitfield (fastresume). That is only sound if the
+    /// data outlives the process and a storage recreated for the same torrent finds it
+    /// again — e.g. files on disk, but not memory. Defaults to false; a middleware
+    /// forwards this to what it wraps.
+    fn supports_session_persistence(&self) -> bool {
+        false
+    }
+
     fn clone_box(&self) -> BoxStorageFactory;
 }
 
@@ -100,6 +114,10 @@ impl<SF: StorageFactory> StorageFactoryExt for SF {
                 self.sf.is_type_id(type_id)
             }
 
+            fn supports_session_persistence(&self) -> bool {
+                self.sf.supports_session_persistence()
+            }
+
             fn clone_box(&self) -> BoxStorageFactory {
                 self.sf.clone_box()
             }
@@ -122,6 +140,10 @@ impl<U: StorageFactory + ?Sized> StorageFactory for Box<U> {
 
     fn is_type_id(&self, type_id: TypeId) -> bool {
         (**self).is_type_id(type_id)
+    }
+
+    fn supports_session_persistence(&self) -> bool {
+        (**self).supports_session_persistence()
     }
 
     fn clone_box(&self) -> BoxStorageFactory {
@@ -262,9 +284,62 @@ mod tests {
             self.underlying_factory.is_type_id(type_id)
         }
 
+        fn supports_session_persistence(&self) -> bool {
+            self.underlying_factory.supports_session_persistence()
+        }
+
         fn clone_box(&self) -> BoxStorageFactory {
             self.clone().boxed()
         }
+    }
+
+    // A factory that keeps the trait's default.
+    #[derive(Clone)]
+    struct ProbeFactory;
+
+    impl StorageFactory for ProbeFactory {
+        type Storage = Probe;
+
+        fn create(
+            &self,
+            _shared: &ManagedTorrentShared,
+            _metadata: &TorrentMetadata,
+        ) -> anyhow::Result<Self::Storage> {
+            Ok(Probe::default())
+        }
+
+        fn clone_box(&self) -> BoxStorageFactory {
+            self.clone().boxed()
+        }
+    }
+
+    #[test]
+    fn test_supports_session_persistence_survives_wrapping_and_boxing() {
+        assert!(FilesystemStorageFactory::default().supports_session_persistence());
+        assert!(
+            FilesystemStorageFactory::default()
+                .boxed()
+                .supports_session_persistence()
+        );
+        let wrapped = Middleware {
+            underlying_factory: FilesystemStorageFactory::default(),
+        };
+        assert!(wrapped.supports_session_persistence());
+        assert!(wrapped.clone().boxed().supports_session_persistence());
+        assert!(wrapped.boxed().clone_box().supports_session_persistence());
+    }
+
+    #[test]
+    fn test_supports_session_persistence_defaults_to_false() {
+        assert!(!ProbeFactory.supports_session_persistence());
+        assert!(!ProbeFactory.boxed().supports_session_persistence());
+        assert!(
+            !Middleware {
+                underlying_factory: ProbeFactory,
+            }
+            .boxed()
+            .supports_session_persistence()
+        );
     }
 
     #[test]

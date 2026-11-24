@@ -112,7 +112,7 @@ use self::{
 };
 
 use super::{
-    ManagedTorrentShared, TorrentMetadata,
+    DownloadMode, ManagedTorrentShared, TorrentMetadata,
     paused::TorrentStatePaused,
     streaming::TorrentStreams,
     utils::{TimedExistence, timeit},
@@ -909,6 +909,13 @@ impl TorrentStateLive {
         }
     }
 
+    /// Wake peers that found nothing to request, because the set of pieces we want may
+    /// have grown — e.g. a stream started, or moved or widened its lookahead window.
+    /// Without this they'd only look again after their idle timeout (5s).
+    pub(crate) fn notify_wanted_pieces_changed(&self) {
+        self.new_pieces_notify.notify_waiters();
+    }
+
     pub(crate) fn reconnect_all_not_needed_peers(&self) {
         self.peers
             .states
@@ -1444,6 +1451,7 @@ impl PeerHandler {
                     peer: self.addr,
                     peer_avg_time: self.counters.average_piece_download_time(),
                     priority_pieces: self.state.streams.iter_next_pieces(&self.state.lengths),
+                    include_queued: self.state.shared.options.download_mode == DownloadMode::Full,
                     file_priorities,
                     file_infos: &self.state.metadata.file_infos,
                     peer_has_piece: |p| bf.get(p.get() as usize).map(|v| *v) == Some(true),
