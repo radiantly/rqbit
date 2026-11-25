@@ -295,6 +295,18 @@ impl ManagedTorrent {
         }
     }
 
+    /// Pieces being downloaded right now: requested from a peer and not yet
+    /// verified, in no particular order. Empty unless the torrent is live.
+    pub fn inflight_pieces(&self) -> Vec<u32> {
+        let Some(live) = self.live() else {
+            return Vec::new();
+        };
+        live.lock_read("inflight_pieces")
+            .get_pieces()
+            .map(|p| p.inflight_pieces().map(|i| i.get()).collect())
+            .unwrap_or_default()
+    }
+
     /// Get the live state if the torrent is live.
     pub fn live(&self) -> Option<Arc<TorrentStateLive>> {
         let g = self.locked.read();

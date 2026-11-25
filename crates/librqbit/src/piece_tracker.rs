@@ -285,6 +285,11 @@ impl PieceTracker {
         self.inflight.len()
     }
 
+    /// The pieces currently in-flight, in no particular order.
+    pub fn inflight_pieces(&self) -> impl Iterator<Item = ValidPieceIndex> + '_ {
+        self.inflight.keys().copied()
+    }
+
     // === PASS-THROUGH METHODS ===
 
     /// Mark a chunk as downloaded. Returns the result indicating if the piece is complete.
